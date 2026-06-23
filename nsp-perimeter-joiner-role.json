@@ -1,0 +1,14 @@
+{
+  "Name": "Discovery NSP Perimeter Joiner FDPO",
+  "Description": "Allows the Microsoft Discovery control plane to create NSP inbound access rules for network-hardened workspaces.",
+  "Actions": [
+    "Microsoft.Network/networkSecurityPerimeters/joinPerimeterRule/action",
+    "Microsoft.Network/locations/networkSecurityPerimeterOperationStatuses/read"
+  ],
+  "NotActions": [],
+  "DataActions": [],
+  "NotDataActions": [],
+  "AssignableScopes": [
+    "/subscriptions/<YOUR_SUBSCRIPTION_ID>"
+  ]
+}

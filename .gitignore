@@ -1,0 +1,45 @@
+# ---- Secrets / credentials (絶対にコミットしない) ----
+*.env
+.env
+.env.*
+*.azureauth
+*.publishsettings
+*.pfx
+*.pem
+*.key
+*.p12
+azureauth.json
+secrets.json
+appsettings.*.json
+local.settings.json
+*.tfvars
+*.parameters.local.json
+
+# ---- Azure / Bicep build artifacts ----
+*.azrm.json
+main.json
+*.bicep.json
+.azure/
+.bicep/
+
+# ---- Terraform (使う場合) ----
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+
+# ---- OS / editor ----
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# ---- VS Code (settings.json は共有したいので除外しない) ----
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+
+# ---- Logs / temp ----
+*.log
+tmp/
+.tmp/
