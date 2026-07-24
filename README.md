@@ -76,6 +76,7 @@ LOCATION=eastus RG=myDiscoveryRG ./deploy.sh
 5. デプロイ実行
 
 ---
+Windows Userの場合、`deploy.ps1`になります。
 
 ## 4. 手動デプロイ（スクリプトを使わない場合）
 
