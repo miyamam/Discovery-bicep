@@ -95,10 +95,82 @@ param chatModelFormat string = 'OpenAI'
 @description('Chat model name to deploy.')
 param chatModelName string = 'gpt-5.2'
 
+// -----------------------------------------------------------------------------
+// Discovery control-plane first-party service principal.
+//
+// Discovery workspaces / bookshelves / supercomputers are network-hardened by
+// default and require the control-plane app to configure a Network Security
+// Perimeter (NSP) in your subscription. The app cannot do that unless it holds
+// both the custom "Discovery NSP Perimeter Joiner" role and the built-in
+// "Reader" role at subscription scope.
+//
+// Docs:
+//   https://learn.microsoft.com/en-us/azure/microsoft-discovery/quickstart-infrastructure-portal#b-assign-required-roles-to-discovery-control-plane-service-app
+//   https://learn.microsoft.com/en-us/azure/microsoft-discovery/how-to-configure-network-security?tabs=azure-cli
+//
+// The Application (client) ID of the first-party app is fixed:
+//   92c174ac-8e41-4815-a1b7-d81b19ab03ce
+// but role assignments require the Object ID (the service principal's id in
+// the current tenant). Look it up before deploying:
+//   az ad sp show --id 92c174ac-8e41-4815-a1b7-d81b19ab03ce --query id -o tsv
+// -----------------------------------------------------------------------------
+@description('Object ID (not App ID) of the Discovery control-plane first-party service principal in the current tenant. Resolve with: az ad sp show --id 92c174ac-8e41-4815-a1b7-d81b19ab03ce --query id -o tsv')
+param discoveryControlPlanePrincipalId string
+
+// -----------------------------------------------------------------------------
+// Discovery Studio (data-plane) administrators.
+//
+// The Microsoft Discovery workspace ships with its OWN data-plane RBAC that is
+// completely separate from ARM Owner / Contributor. Without a Discovery-scoped
+// role, users signing in to https://studio.discovery.microsoft.com see
+// "Access denied. Ensure you have the correct role assigned on this workspace
+// resource in the Azure portal." when trying to create Agents/Projects — even
+// when they hold Owner on the subscription.
+//
+// This template assigns "Microsoft Discovery Platform Administrator (Preview)"
+// (roleId 7a2b6e6c-472e-4b39-8878-a26eb63d75c6) at the resource group scope,
+// which grants Microsoft.Discovery/* on all Discovery resources in the RG
+// (workspaces, storageContainers, supercomputers, and their children).
+//
+// Pass one or more Entra Object IDs; typically populated from
+//   az ad signed-in-user show --query id -o tsv
+// by the deploy wrapper script.
+// -----------------------------------------------------------------------------
+@description('Object IDs of Entra principals to grant "Microsoft Discovery Platform Administrator (Preview)" on this resource group. Enables Discovery Studio operations (create Agents/Projects/etc.). Leave empty to skip.')
+param workspaceAdminPrincipalIds array = []
+
+@description('Principal type for workspaceAdminPrincipalIds. Use User for individual accounts, Group for Entra security groups, ServicePrincipal for apps.')
+@allowed([
+  'User'
+  'Group'
+  'ServicePrincipal'
+])
+param workspaceAdminPrincipalType string = 'User'
+
 // Built-in role definition IDs
 var storageBlobDataContributorRoleId = 'ba92f5b4-2d11-453d-a403-e96b0029c9fe'
 var discoveryPlatformContributorRoleId = '01288891-85ee-45a7-b367-9db3b752fc65'
+var discoveryPlatformAdministratorRoleId = '7a2b6e6c-472e-4b39-8878-a26eb63d75c6'
 var acrPullRoleId = '7f951dda-4ed3-4680-a7ca-43fe172d538d'
+
+// Subscription-scoped module: create the "Discovery NSP Perimeter Joiner"
+// custom role and grant NSP Perimeter Joiner + Reader to the Discovery
+// control-plane service principal. This must complete before any
+// Microsoft.Discovery/* resource is created, otherwise the control plane
+// fails to provision the auto-generated NetworkSecurityPerimeter and the
+// deployment returns InternalServerError from the NSP resource.
+// Deployment name includes the region so this template can be redeployed
+// in different regions of the same subscription without hitting the
+// "InvalidDeploymentLocation" error (subscription-scope deployments are
+// locked to a single location per deployment name). All underlying
+// resources are GUID-based and idempotent.
+module discoveryControlPlaneRoles 'subscription-roles.bicep' = {
+  name: 'discoveryControlPlaneRoles-${location}'
+  scope: subscription()
+  params: {
+    discoveryControlPlanePrincipalId: discoveryControlPlanePrincipalId
+  }
+}
 
 resource vnet 'Microsoft.Network/virtualNetworks@2024-05-01' = {
   name: vnetName
@@ -265,6 +337,23 @@ resource acrPullAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' 
   }
 }
 
+// Grants Discovery Studio (data-plane) access at RG scope. Required so the
+// signed-in user can create Agents / Projects / etc. after deployment
+// without a manual "az role assignment create" step.
+resource discoveryStudioAdminAssignments 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
+  for principalId in workspaceAdminPrincipalIds: {
+    name: guid(resourceGroup().id, principalId, discoveryPlatformAdministratorRoleId)
+    properties: {
+      roleDefinitionId: subscriptionResourceId(
+        'Microsoft.Authorization/roleDefinitions',
+        discoveryPlatformAdministratorRoleId
+      )
+      principalId: principalId
+      principalType: workspaceAdminPrincipalType
+    }
+  }
+]
+
 resource supercomputer 'Microsoft.Discovery/supercomputers@2026-06-01' = {
   name: supercomputerName
   location: location
@@ -273,6 +362,8 @@ resource supercomputer 'Microsoft.Discovery/supercomputers@2026-06-01' = {
   }
   dependsOn: [
     vnet
+    // Roles must exist before the control plane configures NSP.
+    discoveryControlPlaneRoles
   ]
   properties: {
     subnetId: resourceId('Microsoft.Network/virtualNetworks/subnets', vnetName, 'aksSubnet')
@@ -315,6 +406,8 @@ resource workspace 'Microsoft.Discovery/workspaces@2026-06-01' = {
   dependsOn: [
     vnet
     nodePool
+    // Roles must exist before the control plane configures NSP.
+    discoveryControlPlaneRoles
   ]
   properties: {
     workspaceIdentity: {
@@ -342,6 +435,10 @@ resource chatModelDeployment 'Microsoft.Discovery/workspaces/chatModelDeployment
 resource discoveryStorageContainer 'Microsoft.Discovery/storageContainers@2026-06-01' = {
   name: storageContainerName
   location: location
+  dependsOn: [
+    // Roles must exist before the control plane configures NSP.
+    discoveryControlPlaneRoles
+  ]
   properties: {
     storageStore: {
       kind: 'AzureStorageBlob'

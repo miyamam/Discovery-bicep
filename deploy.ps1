@@ -23,7 +23,18 @@ param(
     [string]$Location       = $(if ($env:LOCATION)        { $env:LOCATION }        else { 'uksouth' }),
     [string]$ResourceGroup  = $(if ($env:RG)              { $env:RG }              else { 'discoveryRG' }),
     [string]$DeploymentName = $(if ($env:DEPLOYMENT_NAME) { $env:DEPLOYMENT_NAME } else { "discovery-$(Get-Date -Format 'yyyyMMdd-HHmmss')" }),
-    [string]$TemplateFile   = $(if ($env:TEMPLATE_FILE)   { $env:TEMPLATE_FILE }   else { 'main.bicep' })
+    [string]$TemplateFile   = $(if ($env:TEMPLATE_FILE)   { $env:TEMPLATE_FILE }   else { 'main.bicep' }),
+
+    # Entra Object IDs to grant "Microsoft Discovery Platform Administrator (Preview)"
+    # on the resource group. Required for Discovery Studio (data-plane) access.
+    # Defaults to the currently signed-in user so the deployer can immediately
+    # create Agents / Projects in Studio after the deployment completes.
+    # Override to add more users:
+    #   ./deploy.ps1 -WorkspaceAdmins @('<objId1>','<objId2>')
+    [string[]]$WorkspaceAdmins = @(),
+
+    [ValidateSet('User','Group','ServicePrincipal')]
+    [string]$WorkspaceAdminType = 'User'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -48,6 +59,19 @@ if ($LASTEXITCODE -ne 0) { throw 'az account show に失敗しました。az log
 $subName = az account show --query name -o tsv
 Write-Host "      サブスクリプション: $subName ($subId)"
 
+# サインイン中のユーザーの Object ID を取得 (Discovery Studio 管理者権限付与に使用)
+if ($WorkspaceAdmins.Count -eq 0) {
+    $currentUserId = az ad signed-in-user show --query id -o tsv 2>$null
+    if ($LASTEXITCODE -eq 0 -and $currentUserId) {
+        $WorkspaceAdmins = @($currentUserId)
+        Write-Host "      Discovery Studio 管理者 (自動): $currentUserId"
+    } else {
+        Write-Warning 'サインインユーザーの Object ID を取得できませんでした (Service Principal でログイン中?)。Discovery Studio 側の権限は付与されません。'
+    }
+} else {
+    Write-Host "      Discovery Studio 管理者 (${WorkspaceAdminType}): $($WorkspaceAdmins -join ', ')"
+}
+
 # ------------------------------------------------------------------
 # 2. リソースプロバイダー & フィーチャー登録
 #    ※ Discovery はプレビューのため、登録が完了していないと
@@ -70,6 +94,24 @@ for ($i = 1; $i -le 30; $i++) {
 }
 
 # ------------------------------------------------------------------
+# 2b. Discovery 第1パーティ SP (Discovery control-plane service App) を確認
+#     App ID は固定: 92c174ac-8e41-4815-a1b7-d81b19ab03ce
+#     テナントに存在しない場合は作成し、Object ID を取得して Bicep に渡す
+#     Docs: https://learn.microsoft.com/en-us/azure/microsoft-discovery/how-to-configure-network-security?tabs=azure-cli#verify-the-service-principal
+# ------------------------------------------------------------------
+Write-Host '[2b/5] Discovery control-plane サービスプリンシパルを確認...'
+$discoveryAppId = '92c174ac-8e41-4815-a1b7-d81b19ab03ce'
+$discoveryPrincipalId = az ad sp show --id $discoveryAppId --query id -o tsv 2>$null
+if (-not $discoveryPrincipalId) {
+    Write-Host "      テナントに SP が未作成。作成します..."
+    az ad sp create --id $discoveryAppId --only-show-errors -o none
+    if ($LASTEXITCODE -ne 0) { throw 'Discovery SP の作成に失敗しました。Application Administrator 権限が必要です。' }
+    $discoveryPrincipalId = az ad sp show --id $discoveryAppId --query id -o tsv
+}
+if (-not $discoveryPrincipalId) { throw 'Discovery SP の Object ID を解決できませんでした。' }
+Write-Host "      Discovery SP Object ID: $discoveryPrincipalId"
+
+# ------------------------------------------------------------------
 # 3. リソースグループ作成 (べき等)
 # ------------------------------------------------------------------
 Write-Host '[3/5] リソースグループを作成...'
@@ -81,16 +123,33 @@ Write-Host "      OK: $ResourceGroup ($Location)"
 # 4. Bicep テンプレートの検証
 # ------------------------------------------------------------------
 Write-Host '[4/5] テンプレートを検証 (what-if 省略, validate のみ)...'
+
+# 配列パラメータは JSON リテラル ["id1","id2"] 形式で渡す (PS 5.1 互換)
+# ※ PowerShell → az.exe (Python launcher) はダブルクォートを剥がすため
+#   バックスラッシュエスケープ (\") が必要
+if ($WorkspaceAdmins.Count -gt 0) {
+    $adminsJson = '[' + (($WorkspaceAdmins | ForEach-Object { '\"' + $_ + '\"' }) -join ',') + ']'
+} else {
+    $adminsJson = '[]'
+}
+
 az deployment group validate `
     --resource-group $ResourceGroup `
     --template-file $TemplateFile `
     --parameters location=$Location `
+                 discoveryControlPlanePrincipalId=$discoveryPrincipalId `
+                 workspaceAdminPrincipalIds=$adminsJson `
+                 workspaceAdminPrincipalType=$WorkspaceAdminType `
     --only-show-errors -o none
 if ($LASTEXITCODE -ne 0) { throw 'テンプレートの検証に失敗しました。' }
 Write-Host '      検証 OK'
 
 # ------------------------------------------------------------------
 # 5. デプロイ実行
+#    ※ main.bicep には subscription() スコープのモジュールが含まれる
+#      (カスタムロール作成 + Discovery SP へのロール割り当て)。
+#      実行者は Subscription 上で Owner または User Access Administrator
+#      権限を持つ必要があります。
 # ------------------------------------------------------------------
 Write-Host '[5/5] デプロイ実行 (スパコン作成に20分以上かかる場合があります)...'
 az deployment group create `
@@ -98,6 +157,9 @@ az deployment group create `
     --name $DeploymentName `
     --template-file $TemplateFile `
     --parameters location=$Location `
+                 discoveryControlPlanePrincipalId=$discoveryPrincipalId `
+                 workspaceAdminPrincipalIds=$adminsJson `
+                 workspaceAdminPrincipalType=$WorkspaceAdminType `
     --query "{state:properties.provisioningState, ws:properties.outputs.workspaceId.value}" `
     -o json
 if ($LASTEXITCODE -ne 0) { throw 'デプロイに失敗しました。' }
