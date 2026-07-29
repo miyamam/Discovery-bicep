@@ -22,7 +22,9 @@ Bicep を使って Microsoft Discovery のインフラ一式を Azure にデプ�
 | Discovery    | Chat Model Deployment                  | チャットモデル（gpt-5.2 など）                                                   |
 | Discovery    | Storage Container                      | Discovery 用ストレージ参照                                                       |
 | Discovery    | Project                                | ワークスペース配下のプロジェクト                                                 |
-| RBAC         | 3 つのロール割り当て                   | UAMI へ Storage Blob Data Contributor / Discovery Platform Contributor / AcrPull |
+| RBAC (UAMI)  | 3 つのロール割り当て                   | UAMI へ Storage Blob Data Contributor / Discovery Platform Contributor / AcrPull |
+| RBAC (ユーザー) | Discovery Platform Administrator     | 実行ユーザー (または指定した Object ID) にワークスペースのデータプレーン権限を付与。**これがないと Discovery Studio 上で「Access denied」になり Agent 作成などができません** |
+| RBAC (サブスク) | NSP Perimeter Joiner + Reader        | Discovery ファーストパーティ SP にサブスクリプションスコープで自動付与 (NSP 構成のため)                     |
 
 ---
 
@@ -55,6 +57,8 @@ Microsoft Discovery のリソースは **デフォルトでネットワーク強
 
 ## 3. クイックスタート（最短手順）
 
+### Bash (Linux / macOS / WSL)
+
 ```bash
 # 1. ログイン & サブスクリプション選択
 az login
@@ -67,16 +71,68 @@ az account set --subscription "<サブスクリプションID>"
 LOCATION=eastus RG=myDiscoveryRG ./deploy.sh
 ```
 
-`deploy.sh` は以下を自動でやってくれます。
+### PowerShell (Windows / クロスプラットフォーム)
 
-1. ログイン状態の確認
-2. `Microsoft.Discovery` プロバイダー & `DiscoveryEnabled` フィーチャーの登録（登録完了まで待機）
-3. リソースグループ作成（べき等）
-4. Bicep テンプレートの検証
-5. デプロイ実行
+```powershell
+# 1. ログイン & サブスクリプション選択
+az login
+az account set --subscription "<サブスクリプションID>"
+
+# 2. ワンコマンドデプロイ (既定値: uksouth / discoveryRG / 実行ユーザーを Studio 管理者に自動指定)
+./deploy.ps1
+
+# リージョン & リソースグループを変更
+./deploy.ps1 -Location swedencentral -ResourceGroup discoveryRG-test
+
+# 追加ユーザー / グループに Discovery Studio 権限を付与
+./deploy.ps1 -WorkspaceAdmins @('<objId1>','<objId2>')
+
+# セキュリティグループを管理者に指定 (Type を Group に切り替え)
+./deploy.ps1 -WorkspaceAdmins @('<groupObjId>') -WorkspaceAdminType Group
+```
+
+### スクリプトの自動処理内容
+
+どちらのスクリプトも以下を自動で行います:
+
+1. ログイン状態の確認 (+ PowerShell 版は **サインインユーザーの Object ID を自動取得**)
+2. `Microsoft.Discovery` プロバイダー & `DiscoveryEnabled` フィーチャーの登録 (登録完了まで待機)
+3. Discovery ファーストパーティ SP (App ID `92c174ac-8e41-4815-a1b7-d81b19ab03ce`) の存在確認 / 自動作成
+4. リソースグループ作成 (べき等)
+5. Bicep テンプレートの検証
+6. デプロイ実行 (**サブスクリプションスコープの RBAC も含めて完結**)
+
+### `deploy.ps1` のオプション一覧
+
+| パラメータ / 環境変数 | 既定値 | 説明 |
+| --- | --- | --- |
+| `-Location` / `LOCATION` | `uksouth` | デプロイ先リージョン (`eastus` / `uksouth` / `swedencentral`) |
+| `-ResourceGroup` / `RG` | `discoveryRG` | 作成先リソースグループ名。存在しない場合は自動作成 |
+| `-DeploymentName` / `DEPLOYMENT_NAME` | `discovery-<yyyyMMdd-HHmmss>` | Azure デプロイ名 (履歴に表示される名前) |
+| `-TemplateFile` / `TEMPLATE_FILE` | `main.bicep` | 使用する Bicep テンプレート |
+| `-WorkspaceAdmins` | `@()` → **サインインユーザーを自動追加** | Discovery Studio (データプレーン) の管理者にする Object ID の配列 |
+| `-WorkspaceAdminType` | `User` | `WorkspaceAdmins` の種別。`User` / `Group` / `ServicePrincipal` |
+
+> ✅ **`-WorkspaceAdmins` を省略しても、スクリプトが `az ad signed-in-user show` でサインインユーザーの Object ID を自動取得し、Discovery Platform Administrator ロールを付与します。** デプロイ直後から Discovery Studio で Agent / Project 作成が可能です。
+>
+> 逆にサービスプリンシパルでログインしている場合は `-WorkspaceAdmins @('<objId>')` を明示指定してください (自動取得はスキップされ、警告が出ます)。
+
+### 同一サブスクリプション内で複数リージョンにデプロイする
+
+`main.bicep` のサブスクリプションスコープモジュール名にはリージョンサフィックスが付いています (`discoveryControlPlaneRoles-${location}`)。そのため以下のように **既存の環境を壊さずに別リージョンへ並行デプロイ** できます:
+
+```powershell
+# 既存 (uksouth) はそのまま
+./deploy.ps1 -Location uksouth -ResourceGroup discoveryRG-prod
+
+# 別リージョンで検証環境を追加
+./deploy.ps1 -Location swedencentral -ResourceGroup discoveryRG-test
+```
+
+中のカスタムロールと RBAC は GUID ベースで冪等なので、両方のデプロイで同じ Discovery ファーストパーティ SP を共有しても衝突しません。
 
 ---
-Windows Userの場合、`deploy.ps1`になります。
+Windows User の場合、`deploy.ps1` を使ってください。Bash 版 (`deploy.sh`) では Studio 管理者ロールの自動付与機能は未実装なので、デプロイ後に手動でロール割り当てが必要です (下記 5-7 参照)。
 
 ## 4. 手動デプロイ（スクリプトを使わない場合）
 
@@ -179,6 +235,48 @@ az vm list-usage --location uksouth \
   --query "[?contains(localName,'D4s_v6')]" -o table
 ```
 
+また、`gpt-5.2` などのモデルデプロイ時は **Cognitive Services のクォータ** も確認します:
+
+```bash
+az cognitiveservices usage list --location uksouth \
+  --query "[?contains(name.value, 'gpt-5.2')].{name:name.value, current:currentValue, limit:limit}" -o table
+```
+
+### 5-7. Discovery Studio で「Access denied」または Agent 作成が無反応
+
+ARM 上で **Owner** ロールを持っていても、Discovery Studio (データプレーン) は **別の RBAC モデル** で動きます。以下のようなエラーが Studio に出る場合、データプレーンロールが付与されていません:
+
+> Access denied. Ensure you have the correct role assigned on this workspace resource in the Azure portal.
+
+**根本原因**: Discovery ワークスペースには ARM ロールとは別に、Studio 側の操作 (Agent / Project 作成、Chat Model 呼び出しなど) を許可するデータプレーンロールが必要です。
+
+**解決策**: `deploy.ps1` を使うと **サインインユーザーへの `Microsoft Discovery Platform Administrator (Preview)` ロール割り当てを Bicep が自動生成** します (リソースグループスコープ)。デプロイ後は Studio のブラウザタブをハードリフレッシュ (Ctrl+F5) するか、一度サインアウトしてサインインし直せばトークンが更新されて操作可能になります。
+
+既存環境に手動で追加したい場合:
+
+```powershell
+$rg      = 'discoveryRG'
+$subId   = az account show --query id -o tsv
+$userId  = az ad signed-in-user show --query id -o tsv
+$rgScope = "/subscriptions/$subId/resourceGroups/$rg"
+
+az role assignment create `
+  --assignee-object-id $userId `
+  --assignee-principal-type User `
+  --role '7a2b6e6c-472e-4b39-8878-a26eb63d75c6' ` # Microsoft Discovery Platform Administrator (Preview)
+  --scope $rgScope
+```
+
+参考: Discovery 関連の主な組込みロール
+
+| ロール名 | 用途 |
+| --- | --- |
+| **Microsoft Discovery Platform Administrator (Preview)** | ワークスペース全体の全操作 (推奨) |
+| Microsoft Discovery Platform Contributor (Preview) | ワークスペース書き込み (限定) |
+| Microsoft Discovery Platform Reader (Preview) | 読み取り専用 |
+| Microsoft Discovery Project Contributor - Preview | プロジェクト単位の CRUD |
+| Microsoft Discovery Chat Model Reader - Preview | Chat Model 参照 |
+
 ---
 
 ## 6. クリーンアップ
@@ -196,10 +294,13 @@ az group delete --name discoveryRG --yes --no-wait
 
 | ファイル                           | 説明                                             |
 | ---------------------------------- | ------------------------------------------------ |
-| `main.bicep`                     | Discovery インフラ一式の Bicep テンプレート      |
-| `deploy.sh`                      | プロバイダー登録〜デプロイを自動化するスクリプト |
-| `nsp-perimeter-joiner-role.json` | NSP 構成時に使うカスタムロール定義               |
+| `main.bicep`                     | Discovery インフラ一式の Bicep テンプレート (Discovery Studio 権限付与含む) |
+| `subscription-roles.bicep`       | サブスクリプションスコープモジュール (NSP Joiner カスタムロール作成 + Discovery SP へ割り当て) |
+| `deploy.sh`                      | プロバイダー登録〜デプロイを自動化する Bash スクリプト |
+| `deploy.ps1`                     | PowerShell 版デプロイスクリプト (サインインユーザーを Studio 管理者に自動指定) |
+| `nsp-perimeter-joiner-role.json` | (参考) NSP 構成用カスタムロール定義 JSON。通常は Bicep が自動作成するので手動使用は不要 |
 | `README.md`                      | 本手順書                                         |
+| `TROUBLESHOOTING.md`             | 追加のトラブルシューティングメモ                 |
 
 ---
 
