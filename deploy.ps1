@@ -8,7 +8,7 @@
 
 .EXAMPLE
     ./deploy.ps1
-    既定値 (uksouth / discoveryRG) でデプロイ
+    既定値 (swedencentral / discoveryRG) でデプロイ
 
 .EXAMPLE
     ./deploy.ps1 -Location eastus
@@ -20,7 +20,7 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$Location       = $(if ($env:LOCATION)        { $env:LOCATION }        else { 'uksouth' }),
+    [string]$Location       = $(if ($env:LOCATION)        { $env:LOCATION }        else { 'swedencentral' }),
     [string]$ResourceGroup  = $(if ($env:RG)              { $env:RG }              else { 'discoveryRG' }),
     [string]$DeploymentName = $(if ($env:DEPLOYMENT_NAME) { $env:DEPLOYMENT_NAME } else { "discovery-$(Get-Date -Format 'yyyyMMdd-HHmmss')" }),
     [string]$TemplateFile   = $(if ($env:TEMPLATE_FILE)   { $env:TEMPLATE_FILE }   else { 'main.bicep' }),

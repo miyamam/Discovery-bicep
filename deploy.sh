@@ -4,7 +4,7 @@
 # 参考: https://learn.microsoft.com/ja-jp/azure/microsoft-discovery/quickstart-infrastructure-bicep
 #
 # 使い方:
-#   ./deploy.sh                  # 既定値 (uksouth / discoveryRG) でデプロイ
+#   ./deploy.sh                  # 既定値 (swedencentral / discoveryRG) でデプロイ
 #   LOCATION=eastus ./deploy.sh  # リージョンを変更 (対応: eastus/uksouth/swedencentral)
 #   RG=myDiscoveryRG ./deploy.sh # リソースグループ名を変更
 #
@@ -13,7 +13,7 @@ set -euo pipefail
 # ------------------------------------------------------------------
 # 0. 設定 (環境変数で上書き可能)
 # ------------------------------------------------------------------
-LOCATION="${LOCATION:-uksouth}"
+LOCATION="${LOCATION:-swedencentral}"
 RG="${RG:-discoveryRG}"
 DEPLOYMENT_NAME="${DEPLOYMENT_NAME:-discovery-$(date +%Y%m%d-%H%M%S)}"
 TEMPLATE_FILE="${TEMPLATE_FILE:-main.bicep}"

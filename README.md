@@ -19,12 +19,32 @@ Bicep を使って Microsoft Discovery のインフラ一式を Azure にデプ�
 | Discovery    | Supercomputer（スパコン）              | 計算基盤（内部で AKS を構築）                                                    |
 | Discovery    | Node Pool                              | スパコンのノードプール                                                           |
 | Discovery    | Workspace                              | Discovery のワークスペース                                                       |
-| Discovery    | Chat Model Deployment                  | チャットモデル（gpt-5.2 など）                                                   |
+| Discovery    | Chat Model Deployment                  | チャットモデル（gpt-5.4 など）                                                   |
 | Discovery    | Storage Container                      | Discovery 用ストレージ参照                                                       |
 | Discovery    | Project                                | ワークスペース配下のプロジェクト                                                 |
 | RBAC (UAMI)  | 3 つのロール割り当て                   | UAMI へ Storage Blob Data Contributor / Discovery Platform Contributor / AcrPull |
 | RBAC (ユーザー) | Discovery Platform Administrator     | 実行ユーザー (または指定した Object ID) にワークスペースのデータプレーン権限を付与。**これがないと Discovery Studio 上で「Access denied」になり Agent 作成などができません** |
 | RBAC (サブスク) | NSP Perimeter Joiner + Reader        | Discovery ファーストパーティ SP にサブスクリプションスコープで自動付与 (NSP 構成のため)                     |
+
+### `main.bicep` の主なパラメーター
+
+本テンプレートは [Azure Quickstart Templates の `discovery-infra-deployment`](https://github.com/Azure/azure-quickstart-templates/tree/master/quickstarts/microsoft.discovery/discovery-infra-deployment) を正としており、それに加えて RBAC 自動付与の独自拡張を持ちます。
+
+| パラメーター | 既定値 | 説明 |
+| --- | --- | --- |
+| `location` | `swedencentral` | デプロイ先リージョン (`eastus` / `swedencentral` / `uksouth`) |
+| `vnetName` | `discovery-vnet` | 仮想ネットワーク名 (2-64 文字) |
+| `storageAccountSku` | `Standard_GRS` | ストレージの冗長性。`Standard_ZRS` / `Standard_GRS` / `Standard_GZRS` / `Standard_RAGRS` / `Standard_RAGZRS` から選択 |
+| `chatModelName` / `chatModelDeploymentName` | `gpt-5.4` / `gpt-5-4` | デプロイするチャットモデルとそのリソース名 |
+| `enableGhcpAiFeatures` | `true` | Workspace の `discovery.workbench.enableGhcpAiFeatures` タグ。GitHub Copilot / AI 機能の有効化 |
+| `enableExtensions` | `true` | Workspace の `discovery.workbench.enableExtensions` タグ。VS Code 拡張機能マーケットプレースの有効化 |
+| `networkIsolation` | `true` | Workspace の `NetworkIsolation` タグ |
+| `discoveryControlPlanePrincipalId` | (必須) | Discovery ファーストパーティ SP の **Object ID**。独自拡張 (NSP ロール付与用)。`deploy.ps1` / `deploy.sh` が自動解決 |
+| `workspaceAdminPrincipalIds` | `[]` | Discovery Platform Administrator を付与する Entra Object ID の配列。独自拡張 |
+
+> ⚠️ **`networkIsolation`**: 既定は `true` ですが、Discovery Studio のワークベンチは現時点で `false` のときのみ接続できます。パブリックプレビューのワークベンチにアクセスしたい場合は `-Parameters networkIsolation=false` を指定してください。
+
+> 📌 **ストレージのネットワーク設定**: `networkAcls.defaultAction` は意図的に `Allow` です。`Microsoft.Discovery` コントロールプレーンが Azure Storage の信頼されたサービスバイパス一覧に未対応で、`Deny` にすると Discovery リソースのプロビジョニングが失敗するためです。デプロイした 5 サブネット (privateEndpointSubnet 以外) の `virtualNetworkRules` は事前設定済みで、Discovery が対応次第 `Deny` に切り替えられます。
 
 ---
 
@@ -51,7 +71,7 @@ Microsoft Discovery のリソースは **デフォルトでネットワーク強
 
 > ⚠️ **East US 2（`eastus2`）は非対応** です。Storage Discovery（別サービス）では eastus2 が使えますが、本サービス（Microsoft Discovery）とは異なるので混同に注意。
 
-`main.bicep` の `location` 既定値は **`uksouth`** で、`@allowed` リストもこの 3 リージョンに限定済みです。
+`main.bicep` の `location` 既定値は **`swedencentral`** で、`@allowed` リストもこの 3 リージョンに限定済みです。
 
 ---
 
@@ -78,11 +98,11 @@ LOCATION=eastus RG=myDiscoveryRG ./deploy.sh
 az login
 az account set --subscription "<サブスクリプションID>"
 
-# 2. ワンコマンドデプロイ (既定値: uksouth / discoveryRG / 実行ユーザーを Studio 管理者に自動指定)
+# 2. ワンコマンドデプロイ (既定値: swedencentral / discoveryRG / 実行ユーザーを Studio 管理者に自動指定)
 ./deploy.ps1
 
 # リージョン & リソースグループを変更
-./deploy.ps1 -Location swedencentral -ResourceGroup discoveryRG-test
+./deploy.ps1 -Location uksouth -ResourceGroup discoveryRG-test
 
 # 追加ユーザー / グループに Discovery Studio 権限を付与
 ./deploy.ps1 -WorkspaceAdmins @('<objId1>','<objId2>')
@@ -106,7 +126,7 @@ az account set --subscription "<サブスクリプションID>"
 
 | パラメータ / 環境変数 | 既定値 | 説明 |
 | --- | --- | --- |
-| `-Location` / `LOCATION` | `uksouth` | デプロイ先リージョン (`eastus` / `uksouth` / `swedencentral`) |
+| `-Location` / `LOCATION` | `swedencentral` | デプロイ先リージョン (`eastus` / `uksouth` / `swedencentral`) |
 | `-ResourceGroup` / `RG` | `discoveryRG` | 作成先リソースグループ名。存在しない場合は自動作成 |
 | `-DeploymentName` / `DEPLOYMENT_NAME` | `discovery-<yyyyMMdd-HHmmss>` | Azure デプロイ名 (履歴に表示される名前) |
 | `-TemplateFile` / `TEMPLATE_FILE` | `main.bicep` | 使用する Bicep テンプレート |
@@ -122,11 +142,11 @@ az account set --subscription "<サブスクリプションID>"
 `main.bicep` のサブスクリプションスコープモジュール名にはリージョンサフィックスが付いています (`discoveryControlPlaneRoles-${location}`)。そのため以下のように **既存の環境を壊さずに別リージョンへ並行デプロイ** できます:
 
 ```powershell
-# 既存 (uksouth) はそのまま
-./deploy.ps1 -Location uksouth -ResourceGroup discoveryRG-prod
+# 既存 (swedencentral) はそのまま
+./deploy.ps1 -Location swedencentral -ResourceGroup discoveryRG-prod
 
 # 別リージョンで検証環境を追加
-./deploy.ps1 -Location swedencentral -ResourceGroup discoveryRG-test
+./deploy.ps1 -Location uksouth -ResourceGroup discoveryRG-test
 ```
 
 中のカスタムロールと RBAC は GUID ベースで冪等なので、両方のデプロイで同じ Discovery ファーストパーティ SP を共有しても衝突しません。
@@ -147,14 +167,14 @@ az provider register --namespace Microsoft.Discovery
 az provider show --namespace Microsoft.Discovery --query registrationState -o tsv
 
 # リソースグループ作成
-az group create --name discoveryRG --location uksouth
+az group create --name discoveryRG --location swedencentral
 
 # デプロイ
 az deployment group create \
   --resource-group discoveryRG \
   --name discovery-deploy \
   --template-file main.bicep \
-  --parameters location=uksouth
+  --parameters location=swedencentral
 ```
 
 ### デプロイ状況の確認
@@ -231,15 +251,15 @@ export AZURE_CORE_COLLECT_TELEMETRY=0
 `Standard_D4s_v6` の vCPU クォータが不足しているとノードプール作成に失敗します。事前に確認・申請してください。
 
 ```bash
-az vm list-usage --location uksouth \
+az vm list-usage --location swedencentral \
   --query "[?contains(localName,'D4s_v6')]" -o table
 ```
 
-また、`gpt-5.2` などのモデルデプロイ時は **Cognitive Services のクォータ** も確認します:
+また、`gpt-5.4` などのモデルデプロイ時は **Cognitive Services のクォータ** も確認します:
 
 ```bash
-az cognitiveservices usage list --location uksouth \
-  --query "[?contains(name.value, 'gpt-5.2')].{name:name.value, current:currentValue, limit:limit}" -o table
+az cognitiveservices usage list --location swedencentral \
+  --query "[?contains(name.value, 'gpt-5.4')].{name:name.value, current:currentValue, limit:limit}" -o table
 ```
 
 ### 5-7. Discovery Studio で「Access denied」または Agent 作成が無反応
